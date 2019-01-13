@@ -1,0 +1,19 @@
+{
+  "name": "ra-data-pouchdb",
+  "version": "0.1.0",
+  "description": "React Admin PouchDB data provider ",
+  "main": "index.js",
+  "keywords": [
+    "admin-on-rest",
+    "react",
+    "xmysql",
+    "rest"
+  ],
+  "dependencies": {
+    "pouchdb-browser": "^7.0.0",
+    "pouchdb-find": "^7.0.0",
+    "short-uuid": "^3.1.0"
+  },
+  "author": "Roldão Rego Jr",
+  "license": "GPL"
+}
