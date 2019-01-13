@@ -1,7 +1,7 @@
 {
   "name": "ra-data-pouchdb",
   "version": "0.1.0",
-  "description": "React Admin PouchDB data provider ",
+  "description": "PouchDB/CouchDB data provider for react admin",
   "main": "index.js",
   "keywords": [
     "admin-on-rest",
@@ -9,6 +9,10 @@
     "xmysql",
     "rest"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/roldaojr/ra-data-pouchdb"
+  },
   "dependencies": {
     "pouchdb-browser": "^7.0.0",
     "pouchdb-find": "^7.0.0",
