@@ -7,11 +7,7 @@ import {
     UPDATE,
     DELETE,
 } from 'react-admin';
-import PouchDB from 'pouchdb';
-import PouchDB_find from 'pouchdb-find';
-import shortuuid from 'short-uuid';
-
-PouchDB.plugin(PouchDB_find);
+import { v4 as uuidv4 } from 'uuid';
 
 const fromPouchDoc = (doc) => {
     doc.id = doc._id.split('/')[1];
@@ -19,7 +15,7 @@ const fromPouchDoc = (doc) => {
 }
 
 export default (database) => {
-    var db = new PouchDB(database);   
+    var db = database;
     /**
      * @param {String} type One of the constants appearing at the top if this file, e.g. 'UPDATE'
      * @param {String} resource Name of the resource to fetch, e.g. 'posts'
@@ -56,7 +52,7 @@ export default (database) => {
                     selector: {[params.target]: params.id}
                 });
             case CREATE:
-                let uuid = shortuuid.generate();
+                let uuid = uuidv4();
                 params.data._id = `${resource}/${uuid}`;
                 return db.put(params.data);
             case UPDATE:
