@@ -6,6 +6,7 @@ import {
     CREATE,
     UPDATE,
     DELETE,
+    DELETE_MANY
 } from 'react-admin';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -15,7 +16,6 @@ const fromPouchDoc = (doc) => {
 }
 
 export default (database) => {
-    var db = database;
     /**
      * @param {String} type One of the constants appearing at the top if this file, e.g. 'UPDATE'
      * @param {String} resource Name of the resource to fetch, e.g. 'posts'
@@ -23,6 +23,7 @@ export default (database) => {
      * @returns {Object} { url, options } The HTTP request parameters
      */
     const convertRESTRequestToPouch = (type, resource, params) => {
+        const db = database;
         switch (type) {
             case GET_LIST:
                 const page = (params.pagination && params.pagination.page != null) ? params.pagination.page : 1;
@@ -34,12 +35,26 @@ export default (database) => {
                     selector: {_id: {
                         '$gt': `${resource}/`,
                         '$lt': `${resource}/\ufff0`
-                    }},
-                    sort: [{[field]: (order.toLowerCase())}],
-                    limit: perPage,
-                    skip: ((page - 1) * perPage)
+                    }}
                 };
-                return db.find(query);
+                for (const [key, value] of Object.entries(params.filter)) {
+                    query.selector[key] = {
+                        $regex: new RegExp(`.*${value}.*`, 'i')
+                    };
+                }
+                return db.find(query).then(response => {
+                    return response.docs.length
+                }).then(total_rows => {
+                    return db.find({
+                        ...query,
+                        sort: [{[field]: (order.toLowerCase())}],
+                        limit: perPage,
+                        skip: ((page - 1) * perPage)
+                    }).then(response => {
+                        response.total_rows = total_rows
+                        return response
+                    })
+                })
             case GET_ONE:
                 return db.get(`${resource}/${params.id}`);
             case GET_MANY:
@@ -62,10 +77,24 @@ export default (database) => {
                 return db.get(`${resource}/${params.id}`).then(doc => {
                     return db.remove(doc)
                 });
+            case DELETE_MANY:
+                return db.allDocs({
+                    keys: params.ids.map(id => `${resource}/${id}`)
+                }).then(result => {
+                    return result.rows.map(row => ({
+                        _id: row.id,
+                        _rev: row.value.rev,
+                        _deleted: true
+                    }))
+                }).then(docs => {
+                    return db.bulkDocs(docs)
+                })
             default:
-                throw new Error(`Unsupported fetch action type ${type}`);
+                return Promise.reject(() => {
+                    return new Error(`Unsupported fetch action type ${type}`)
+                });
         }
-    }
+    };
 
     /**
      * @param {Object} response HTTP response from fetch()
@@ -82,7 +111,7 @@ export default (database) => {
             case GET_MANY_REFERENCE:
                 return {
                     data: response.docs.map(fromPouchDoc),
-                    total: response.docs.length
+                    total: response.total_rows
                 };
             case GET_MANY:
                 return {
@@ -103,9 +132,11 @@ export default (database) => {
      * @param {Object} payload Request parameters. Depends on the request type
      * @returns {Promise} the Promise for a REST response
      */
-    return (type, resource, params) => {
+    function dataProvider(type, resource, params) {
         const response = convertRESTRequestToPouch(type, resource, params);
         return Promise.resolve(response).then(
             response => convertPouchResponseToREST(response, type, resource, params));
     };
+
+    return dataProvider;
 }
