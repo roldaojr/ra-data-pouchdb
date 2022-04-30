@@ -1,22 +1,29 @@
-import { v4 as uuidv4 } from 'uuid'
+import { generate as shortUUID } from 'short-uuid'
 
-const keyAsNameAndId = row => ({
-    id: row.key, name: row.key,
-    ...row.value
-})
 
-export default (database, {...options}) => {
+const dataProvider = (database, {
+    viewResources = {},
+    resourceSeparator = ':',
+    docId = shortUUID
+}) => {
+    const getRecordId = id => (
+        id.split(resourceSeparator)[1]
+    )
+    const formatDocId = (resource, id) => (
+        `${resource}${resourceSeparator}${id}`
+    )
+    const docIdToRecordId = ({_id, ...doc}) => ({
+        ...doc, id: _id.split(resourceSeparator)[1]
+    })
+
     const asyncDatabase = Promise.resolve(database)
-    const viewResources = options.viewResources || {}
-    const separator = options.resourceSeparator || '/'
-    const setRecordId = doc => ({...doc, id: doc._id.split(separator)[1]})
-    const getDocId = (resource, id) => `${resource}${separator}${id}`
-    const dataRequest = async (type, resource, params) => {
+
+    const dataRequest = async (type, resource, params = {}) => {
         const db = await asyncDatabase
         switch (type) {
             case 'getOne':
-                return {data: setRecordId(
-                    await db.get(getDocId(resource, params.id))
+                return {data: docIdToRecordId(
+                    await db.get(formatDocId(resource, params.id))
                 )}
             case 'getList':
                 const page = (params.pagination && params.pagination.page != null) ? params.pagination.page : 1
@@ -26,17 +33,15 @@ export default (database, {...options}) => {
                 if (field === 'id') field = '_id'
                 let query = {
                     selector: {_id: {
-                        '$gt': `${resource}/`,
-                        '$lt': `${resource}/\ufff0`
+                        '$gt': `${resource}${resourceSeparator}`,
+                        '$lt': `${resource}${resourceSeparator}\ufff0`
                     }}
-                };
-                for (const [key, value] of Object.entries(params.filter)) {
-                    query.selector[key] = {
-                        $regex: new RegExp(`.*${value}.*`, 'i')
-                    };
                 }
-                const listResp = await db.find(query)
-                const total_rows = listResp.docs.length
+                if(params.filter) {
+                    for (const [key, value] of Object.entries(params.filter)) {
+                        query.selector[key] = { $eq: value }
+                    }
+                }
                 const pagedListResp = await db.find({
                     ...query,
                     sort: [{[field]: (order.toLowerCase())}],
@@ -44,43 +49,44 @@ export default (database, {...options}) => {
                     skip: ((page - 1) * perPage)
                 })
                 return {
-                    data: pagedListResp.docs.map(setRecordId),
-                    total: total_rows
+                    data: pagedListResp.docs.map(docIdToRecordId),
+                    total: (await db.info()).doc_count
                 }
             case 'getMany':
-                const manyResp = db.allDocs({
+                const manyResp = await db.allDocs({
                     include_docs: true,
-                    keys: params.ids.map(id => getDocId(resource, id))
+                    keys: params.ids.map(id => formatDocId(resource, id))
                 });
                 return {
-                    data: manyResp.docs.map(setRecordId),
+                    data: manyResp.docs.map(docIdToRecordId),
                     total: manyResp.total_rows
                 }
             case 'getManyReference':
-                const manyRefResp = db.find({
+                const manyRefResp = await db.find({
                     selector: {[params.target]: params.id}
                 });
                 return {
-                    data: manyRefResp.docs.map(setRecordId),
+                    data: manyRefResp.docs.map(docIdToRecordId),
                     total: manyRefResp.total_rows
                 }
             case 'create':
-                const idFunc = options.idFunc || uuidv4
-                params.data._id = getDocId(resource, idFunc(params.data))
+                params.data._id = formatDocId(resource, docId(params.data))
                 return {data: await db.put(params.data)}
             case 'update':
-                params.data._id = getDocId(resource, params.data.id)
-                delete params.data.id
-                return {data: await db.put(params.data)}
+                const {id, ...updateDoc} = params.data
+                updateDoc._id = formatDocId(resource, id)
+                const updateResult = await db.put(updateDoc)
+                return {data: {id: getRecordId(updateResult.id)}}
             case 'delete':
-                const doc = await db.get(getDocId(resource, params.id))
-                return {data: await db.remove(doc)}
+                const doc = await db.get(formatDocId(resource, params.id))
+                const deleteResult = await db.remove(doc)
+                return {data: {id: getRecordId(deleteResult.id)}}
             case 'deleteMany':
                 const result = await db.allDocs({
-                    keys: params.ids.map(id => getDocId(resource, id))
+                    keys: params.ids.map(id => formatDocId(resource, id))
                 })
                 const deleteDocs = result.rows.map(row => ({
-                    _id: getDocId(resource, row.id),
+                    _id: formatDocId(resource, row.id),
                     _rev: row.value.rev,
                     _deleted: true
                 }))
@@ -92,36 +98,60 @@ export default (database, {...options}) => {
         }
     }
 
-    const mapReduceRequest = async(options, type, params) => {
-        const db = await asyncDatabase
+    const mapReduceRequest = async(options, type, params = {}) => {
+        const db = await asyncDatabase        
+        const keyAsNameAndId = row => ({
+            id: row.key, name: row.key,
+            ...row.value
+        })
+
         const {view, query, func} = options
-        let result, rows
+        let filter = {}
+        let pagination = {}
+        if(params.filter && params.filter.q) {
+            filter = {
+                startKey: `${params.filter.q}`,
+                endKey: `${params.filter.q}\ufff0`
+            }
+        }
+        let result, rows, total
         switch(type) {
             case 'getList':
-                const page = (params.pagination && params.pagination.page != null) ? params.pagination.page : 1;
-                const perPage = (params.pagination && params.pagination.perPage != null) ? params.pagination.perPage : 10;
+                if(params.pagination && params.pagination.perPage) {
+                    const page = params.pagination.page || 1
+                    const perPage = params.pagination.perPage
+                    pagination = {
+                        limit: perPage,
+                        skip: ((page - 1) * perPage)
+                    }
+                }
                 result = await db.query(view, {
-                    limit: perPage, skip: ((page - 1) * perPage),
-                    ...query
-                })           
-                break
+                    ...query, ...filter, ...pagination
+                })
+                total = (await db.info()).doc_count
+                rows = result.rows.map(func || keyAsNameAndId)
+                return {data: rows, total}
             case 'getMany':
                 result = await db.query(view, {
                     keys: params.ids, ...query
                 })
-                break
+                total = result.rows.length
+                rows = result.rows.map(func || keyAsNameAndId)
+                return {data: rows, total}
             case 'getOne':
                 result = await db.query(view, {
                     key: params.id, ...query
                 })
-                break
+                if(result.rows.length > 0) {
+                    return {data: result.rows.map(func || keyAsNameAndId)[0]}
+                } else {
+                    return Promise.reject(new Error(`Not found`))
+                }
             default:
                 return Promise.reject(
                     new Error(`Unsupported fetch action type ${type}`)
                 )
         }
-        rows = result.rows.map(func || keyAsNameAndId)
-        return {data: rows, total: rows.length}
     }
 
     const handle = async (type, resource, params) => {
@@ -133,7 +163,7 @@ export default (database, {...options}) => {
     }
 
     return {
-        database: asyncDatabase,
+        getDatabase: () => asyncDatabase,
         getList: (resource, params) => handle('getList', resource, params),
         getOne: (resource, params) => handle('getOne', resource, params),
         getMany: (resource, params) => handle('getMany', resource, params),
@@ -148,3 +178,5 @@ export default (database, {...options}) => {
             handle('deleteMany', resource, params),
     }
 }
+
+export default dataProvider
